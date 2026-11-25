@@ -1,0 +1,13 @@
+{
+  "name": "Atividade 12 - Sinais Vitais (Zabbix + SNMPv3 + BGP)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "hostRequirements": { "cpus": 2, "memory": "8gb" },
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": { "label": "Zabbix (Admin / zabbix)", "onAutoForward": "openBrowser" }
+  },
+  "postStartCommand": "bash lab.sh iniciar"
+}

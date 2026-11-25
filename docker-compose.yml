@@ -1,0 +1,140 @@
+# Atividade 12 - "Sinais Vitais" no Setor Financeiro
+# Lab completo: roteador de borda (FRR + BGP + SNMPv3), peer BGP do provedor e Zabbix 7.0 LTS.
+# Tudo sobe com:  docker compose up -d --build   (ou ./lab.sh iniciar / INICIAR.bat)
+# O container "configurador" configura o Zabbix sozinho pela API (host, itens, triggers, NOC, action).
+#
+# Topologia:
+#   [isp-transito AS65020] --eBGP-- [roteador-borda AS65010] --SNMPv3 UDP/161-- [zbx-server]
+#        172.30.20.253        rede_wan      172.30.20.254 | 172.30.10.254   rede_gerencia   172.30.10.20
+
+name: atividade12
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zbx-db
+    environment:
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: zabbix
+    volumes:
+      - zbx-db:/var/lib/postgresql/data
+    networks:
+      rede_gerencia:
+        ipv4_address: 172.30.10.30
+    restart: unless-stopped
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    container_name: zbx-server
+    environment:
+      DB_SERVER_HOST: postgres
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: zabbix
+      TZ: ${TZ_LAB:-America/Sao_Paulo}   # horário dos e-mails (mude TZ_LAB no .env se quiser)
+    depends_on:
+      - postgres
+    networks:
+      rede_gerencia:
+        ipv4_address: 172.30.10.20
+    restart: unless-stopped
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    container_name: zbx-web
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      DB_SERVER_HOST: postgres
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: zabbix
+      PHP_TZ: ${TZ_LAB:-America/Sao_Paulo}
+    ports:
+      - "8080:8080"
+    depends_on:
+      - zabbix-server
+    networks:
+      rede_gerencia:
+        ipv4_address: 172.30.10.21
+    restart: unless-stopped
+
+  # Roteador de borda do banco: FRRouting (BGP) + snmpd com SNMPv3 authPriv
+  roteador-borda:
+    build: ./imagem-frr
+    image: atividade12/frr-snmp:1.0
+    container_name: roteador-borda
+    hostname: roteador-borda
+    cap_add: [NET_ADMIN, NET_RAW, SYS_ADMIN]
+    sysctls:
+      net.ipv4.ip_forward: 1
+    environment:
+      SNMP_USER: ${SNMP_USER}
+      SNMP_AUTH_PASS: ${SNMP_AUTH_PASS}
+      SNMP_PRIV_PASS: ${SNMP_PRIV_PASS}
+    volumes:
+      - ./roteador:/config:ro
+      - ./scripts:/scripts:ro
+    networks:
+      rede_gerencia:
+        ipv4_address: 172.30.10.254
+      rede_wan:
+        ipv4_address: 172.30.20.254
+    restart: unless-stopped
+
+  # Provedor de trânsito (peer eBGP) que anuncia milhares de rotas para o banco
+  isp-transito:
+    image: atividade12/frr-snmp:1.0
+    container_name: isp-transito
+    hostname: isp-transito
+    cap_add: [NET_ADMIN, NET_RAW, SYS_ADMIN]
+    sysctls:
+      net.ipv4.ip_forward: 1
+    volumes:
+      - ./isp-transito:/config:ro
+      - ./scripts:/scripts:ro
+    depends_on:
+      - roteador-borda
+    networks:
+      rede_wan:
+        ipv4_address: 172.30.20.253
+    restart: unless-stopped
+
+  # Configura o Zabbix pela API assim que ele responde e termina (fica "Exited (0)" = OK).
+  # Também é usado para rodar o status.py e a configuração de e-mail, sem precisar de Python no PC.
+  configurador:
+    image: python:3.12-slim
+    container_name: zbx-configurador
+    working_dir: /lab
+    environment:
+      ZABBIX_API: http://zabbix-web:8080/api_jsonrpc.php
+      SNMP_USER: ${SNMP_USER}
+      SNMP_AUTH_PASS: ${SNMP_AUTH_PASS}
+      SNMP_PRIV_PASS: ${SNMP_PRIV_PASS}
+      GMAIL_REMETENTE: ${GMAIL_REMETENTE:-}
+      EMAIL_NOC: ${EMAIL_NOC:-}
+      TZ: ${TZ_LAB:-America/Sao_Paulo}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./scripts:/lab/scripts:ro
+    command: ["python", "scripts/configurar_zabbix.py", "--se-nao-existir"]
+    depends_on:
+      - zabbix-web
+      - roteador-borda
+    networks:
+      rede_gerencia:
+        ipv4_address: 172.30.10.40
+    restart: "no"
+
+volumes:
+  zbx-db:
+
+networks:
+  rede_gerencia:
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+  rede_wan:
+    ipam:
+      config:
+        - subnet: 172.30.20.0/24

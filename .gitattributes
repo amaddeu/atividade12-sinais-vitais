@@ -1,0 +1,5 @@
+# Scripts e configs sempre com fim de linha Unix (rodam dentro de containers Linux)
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.pdf binary
