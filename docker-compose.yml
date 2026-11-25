@@ -6,6 +6,7 @@
 # Topologia:
 #   [isp-transito AS65020] --eBGP-- [roteador-borda AS65010] --SNMPv3 UDP/161-- [zbx-server]
 #        172.30.20.253        rede_wan      172.30.20.254 | 172.30.10.254   rede_gerencia   172.30.10.20
+#   [zbx-server] --webhook HTTP/8081--> [discord-bot 172.30.10.50] --HTTPS--> Discord (canal do NOC)
 
 name: atividade12
 
@@ -100,6 +101,26 @@ services:
         ipv4_address: 172.30.20.253
     restart: unless-stopped
 
+  # Bot do Discord do NOC: o Zabbix chama http://discord-bot:8081/zabbix (media type Webhook)
+  # e o bot publica o alerta no canal. Token e canal ficam no discord.env (./lab.sh discord).
+  discord-bot:
+    build: ./discord-bot
+    image: atividade12/discord-bot:1.0
+    container_name: discord-bot
+    env_file:
+      - path: ./discord.env
+        required: false
+    environment:
+      BOT_SECRET: ${BOT_SECRET}
+      ZABBIX_URL: ${ZABBIX_URL:-http://localhost:8080}
+      TZ: ${TZ_LAB:-America/Sao_Paulo}
+    volumes:
+      - discord-bot:/data
+    networks:
+      rede_gerencia:
+        ipv4_address: 172.30.10.50
+    restart: unless-stopped
+
   # Configura o Zabbix pela API assim que ele responde e termina (fica "Exited (0)" = OK).
   # Também é usado para rodar o status.py e a configuração de e-mail, sem precisar de Python no PC.
   configurador:
@@ -113,6 +134,7 @@ services:
       SNMP_PRIV_PASS: ${SNMP_PRIV_PASS}
       GMAIL_REMETENTE: ${GMAIL_REMETENTE:-}
       EMAIL_NOC: ${EMAIL_NOC:-}
+      BOT_SECRET: ${BOT_SECRET}
       TZ: ${TZ_LAB:-America/Sao_Paulo}
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -128,6 +150,7 @@ services:
 
 volumes:
   zbx-db:
+  discord-bot:
 
 networks:
   rede_gerencia:

@@ -1,2 +1,4 @@
 *.tar
 .env.local
+# token do bot do Discord (criado por ./lab.sh discord) - nunca vai pro git
+discord.env

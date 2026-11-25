@@ -4,7 +4,7 @@
 
 Lab 100% gratuito em Docker: um roteador de borda Linux com FRRouting (BGP) monitorado por
 **SNMPv3 (authPriv)** a partir de um **Zabbix 7.0 LTS**. Quando a **média de CPU de 5 minutos passa de 90%**,
-o Zabbix abre um problema **Disaster** e manda **e-mail ao NOC**.
+o Zabbix abre um problema **Disaster** e avisa o NOC por **e-mail** e por um **bot no Discord**.
 
 Tudo sobe com um comando e se configura sozinho: não precisa instalar Zabbix, Ubuntu nem WSL na mão.
 
@@ -14,7 +14,7 @@ Tudo sobe com um comando e se configura sozinho: não precisa instalar Zabbix, U
 
 ### Opção A – GitHub Codespaces (recomendado: roda no navegador, sem instalar nada)
 
-1. Clique aqui: [![Abrir no GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/amaddeu/atividade12-sinais-vitais?quickstart=1)
+1. Clique aqui: [![Abrir no GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/peixotinho-md/zabbix-dc?quickstart=1)
    (ou, nesta página, **Code ▸ Codespaces ▸ Create codespace on main**).
 2. Espere abrir o VS Code no navegador. O lab sobe sozinho no terminal (1ª vez: **3 a 6 minutos**).
    Quando aparecer `LAB PRONTO`, está tudo configurado.
@@ -40,19 +40,21 @@ Tudo sobe com um comando e se configura sozinho: não precisa instalar Zabbix, U
 
 | Arquivo | O que faz |
 |---|---|
-| `1-INICIAR.bat` | sobe os 6 containers, configura o Zabbix e abre http://localhost:8080 |
+| `1-INICIAR.bat` | sobe os 7 containers, configura o Zabbix e abre http://localhost:8080 |
 | `2-TESTES.bat` | sessão BGP + testes de segurança do SNMPv3 |
 | `3-DEMO.bat` | ISP manda +10.000 rotas e a CPU do roteador vai a 100% por 8 min |
 | `4-PARAR-DEMO.bat` | para o estresse e retira as rotas extras |
 | `5-PAINEL.bat` | painel ao vivo (CPU, RAM, BGP, problemas, e-mails) |
 | `6-EMAIL-OPCIONAL.bat` | liga o envio real de e-mail (Gmail + senha de app) |
 | `7-DESLIGAR.bat` | para os containers (configuração preservada) |
+| `8-DISCORD.bat` | liga o bot do Discord do NOC (token + ID do canal) |
+| `9-DISCORD-TESTE.bat` | manda um Disaster de teste + resolução para o canal |
 
 ### Opção C – Linux / macOS / WSL (qualquer máquina com Docker)
 
 ```bash
-git clone https://github.com/amaddeu/atividade12-sinais-vitais.git && cd atividade12-sinais-vitais
-./lab.sh iniciar     # depois: testes | demo | parar-demo | painel | status | email | desligar | apagar
+git clone https://github.com/peixotinho-md/zabbix-dc.git && cd zabbix-dc
+./lab.sh iniciar     # depois: testes | demo | parar-demo | painel | status | email | discord | discord-teste | desligar | apagar
 ```
 
 Ou, sem os atalhos: `docker compose up -d --build` (o container `zbx-configurador` configura o Zabbix e termina).
@@ -65,14 +67,36 @@ Ou, sem os atalhos: `docker compose up -d --build` (o container `zbx-configurado
 |---|---|
 | 0 min | BGP passa de 3.000 para 13.000 prefixos; CPU do roteador vai a 100% |
 | ~4 min | média de 5 min > 70% e > 80% → **Warning** e **High** |
-| ~5 min | média de 5 min > 90% → **DISASTER** + e-mail ao NOC (*Monitoring ▸ Problems*) |
-| depois de `parar-demo` | média cai abaixo de 85% → problema **RESOLVIDO** + e-mail de recuperação |
+| ~5 min | média de 5 min > 90% → **DISASTER** + e-mail e Discord ao NOC (*Monitoring ▸ Problems*) |
+| depois de `parar-demo` | média cai abaixo de 85% → problema **RESOLVIDO** + e-mail e Discord de recuperação |
 
 **Sobre o e-mail:** sem configurar o Gmail, o Zabbix **dispara** o alerta mesmo assim, mas o envio aparece como
 `FALHOU – Login denied` (não há senha). Isso prova que a action rodou (veja em *Reports ▸ Action log* ou no
 `./lab.sh painel`). Para o e-mail chegar de verdade, rode `./lab.sh email` (ou `6-EMAIL-OPCIONAL.bat`) e informe
 um Gmail com [senha de app](https://myaccount.google.com/apppasswords). A senha fica só no banco do Zabbix,
 nunca em arquivo.
+
+## Bot do Discord do NOC (opcional)
+
+Além do e-mail, o Disaster é publicado no Discord por um bot próprio (`discord-bot/`, Python + discord.py).
+O Zabbix chama o bot por um *media type* **Webhook** (`Discord - NOC`), o bot publica um embed colorido por
+severidade no canal do NOC e, quando o problema é resolvido, **responde na mesma mensagem** e risca o alerta
+original. Ack/comentários no Zabbix são ignorados para não poluir o canal.
+
+1. Em <https://discord.com/developers/applications> ▸ **New Application** ▸ aba **Bot** ▸ **Reset Token** e copie o token.
+   Não precisa ligar nenhum *Privileged Gateway Intent*.
+2. Aba **OAuth2 ▸ URL Generator**: marque o escopo `bot` e as permissões **View Channels**, **Send Messages**,
+   **Embed Links**, **Read Message History** (e **Mention Everyone** se for marcar um cargo). Abra a URL gerada e
+   adicione o bot ao seu servidor.
+3. No Discord: *Configurações ▸ Avançado ▸ Modo desenvolvedor*. Botão direito no canal do NOC ▸ **Copiar ID**
+   (e, se quiser marcar alguém no Disaster, botão direito no cargo ▸ **Copiar ID**).
+4. Rode `./lab.sh discord` (ou `8-DISCORD.bat`) e informe token, ID do canal e, opcional, ID do cargo.
+   Isso grava o `discord.env` (está no `.gitignore`, o token nunca vai pro git) e reinicia o bot.
+5. Teste sem esperar a demo: `./lab.sh discord-teste` (ou `9-DISCORD-TESTE.bat`) manda um Disaster falso e a
+   resolução dele 10 s depois. Depois rode `./lab.sh demo` para ver o alerta real.
+
+Sem token o bot fica no ar mas responde `503` ao Zabbix, e o envio aparece como falha no *Action log*, igual ao
+e-mail sem senha. Para ver o que está acontecendo: `docker logs -f discord-bot`.
 
 Logins: **Admin / zabbix** (administrador) · **noc / Operacao#2026** (operador NOC, só leitura).
 
@@ -87,6 +111,8 @@ Logins: **Admin / zabbix** (administrador) · **noc / Operacao#2026** (operador 
   (13.000 na demo)                 rede_wan          rede_gerencia          zbx-web :8080 + PostgreSQL 16
                                                                                        |
                                                                      smtp.gmail.com:587 STARTTLS --> NOC
+                                                                                       |
+                                              webhook HTTP :8081 --> [discord-bot] 172.30.10.50 --HTTPS--> Discord
 ```
 
 | Container | Papel | Imagem |
@@ -96,13 +122,16 @@ Logins: **Admin / zabbix** (administrador) · **noc / Operacao#2026** (operador 
 | `zbx-server` | Zabbix Server 7.0 (coleta SNMP, avalia triggers, envia e-mail) | `zabbix/zabbix-server-pgsql:alpine-7.0-latest` |
 | `zbx-web` | Interface web (porta 8080) | `zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest` |
 | `zbx-db` | Banco do Zabbix | `postgres:16-alpine` |
+| `discord-bot` | Bot do Discord do NOC: recebe o webhook do Zabbix e publica no canal | build local (`discord-bot/`, Python 3.12 + discord.py) |
 | `zbx-configurador` | Configura o Zabbix pela API e termina (`Exited (0)` = OK) | `python:3.12-slim` |
 
 ## Estrutura do repositório
 
 ```
-docker-compose.yml        os 6 containers e as 2 redes
-.env                      senhas do LAB (SNMPv3, banco) - fictícias, só existem nos containers
+docker-compose.yml        os 7 containers e as 2 redes
+.env                      senhas do LAB (SNMPv3, banco, segredo do bot) - fictícias, só existem nos containers
+discord.env               token e canal do Discord (criado por ./lab.sh discord, fora do git)
+discord-bot/              bot do Discord (bot.py), teste.py e Dockerfile
 imagem-frr/               Dockerfile do roteador (FRR + snmpd + stress-ng) e entrypoint
 roteador/                 frr.conf (BGP AS65010) e snmpd.conf (só SNMPv3) do roteador de borda
 isp-transito/             frr.conf do provedor (AS65020, 3.000 prefixos)
@@ -170,7 +199,10 @@ windows/*.bat             atalhos Windows
 5. Media type **Gmail - NOC**: `smtp.gmail.com:587`, STARTTLS, verificação de certificado, autenticação com **senha de app**.
 6. Grupo de usuários **NOC - Operações** (leitura no grupo Roteadores de Borda) e usuário **noc**.
 7. Action **NOC - Alerta crítico roteador de borda**: condição `grupo = Roteadores de Borda` **E** `severidade >= Disaster`
-   → envia e-mail ao grupo NOC. Na recuperação, notifica todos os envolvidos (“[RESOLVIDO]”).
+   → envia e-mail **e Discord** ao grupo NOC. Na recuperação, notifica todos os envolvidos (“[RESOLVIDO]”).
+8. Media type **Discord - NOC** (Webhook): um JavaScript faz `POST http://discord-bot:8081/zabbix` com os dados do
+   evento em JSON e o cabeçalho `X-Bot-Secret` (macro global secreta `{$BOT_SECRET}`). Quem já tinha o lab
+   configurado ganha o Discord no próximo `./lab.sh iniciar`, sem apagar o histórico.
 
 ## Problemas comuns
 
@@ -179,4 +211,6 @@ windows/*.bat             atalhos Windows
 | `docker: command not found` / Docker não está rodando | abra o Docker Desktop (Windows/macOS) ou use o Codespaces |
 | Porta 8080 já em uso | feche o outro programa ou troque `"8080:8080"` no `docker-compose.yml` |
 | Zabbix abre mas o host aparece cinza | espere 1 a 2 min: a 1ª coleta SNMP leva até 1 minuto |
+| Bot do Discord: `503 bot sem DISCORD_TOKEN` no Action log | rode `./lab.sh discord` (ou `8-DISCORD.bat`) |
+| Bot do Discord: `sem permissao no canal` | dê ao bot *Ver canal*, *Enviar mensagens*, *Inserir links* e *Ver histórico* no canal |
 | Quero começar do zero | `./lab.sh apagar` e depois `./lab.sh iniciar` |

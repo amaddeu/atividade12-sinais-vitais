@@ -4,7 +4,7 @@ Atividade 12 - configura o Zabbix 7.0 via API (idempotente: pode rodar várias v
 
 Cria: grupo de hosts, host "Roteador-Borda" com interface SNMPv3 authPriv, itens de CPU/RAM/BGP,
 triggers Warning/High/Disaster (CPU e RAM) + trigger de "sem resposta", media type de e-mail (Gmail),
-grupo/usuário NOC e a action que manda e-mail ao NOC.
+media type Webhook do bot do Discord, grupo/usuário NOC e a action que avisa o NOC por e-mail e Discord.
 
 A senha de app do Gmail NÃO passa por aqui: ela é digitada na interface web
 (Alertas > Tipos de mídia > Gmail - NOC), então nunca fica gravada em arquivo.
@@ -98,6 +98,89 @@ Resolvido em: {EVENT.RECOVERY.DATE} {EVENT.RECOVERY.TIME}
 Duração do problema: {EVENT.DURATION}
 Valor atual: {ITEM.LASTVALUE1}"""
 
+# Webhook do Zabbix -> bot do Discord (container discord-bot). Manda os dados do evento em JSON;
+# o bot monta o embed e, na recuperação, responde no alerta original.
+DISCORD_NOME = "Discord - NOC"
+DISCORD_URL = "http://discord-bot:8081/zabbix"
+JS_DISCORD = r"""
+var p = JSON.parse(value);
+var req = new HttpRequest();
+req.addHeader('Content-Type: application/json');
+req.addHeader('X-Bot-Secret: ' + p.secret);
+delete p.secret;
+Zabbix.log(4, '[Discord NOC] enviando evento ' + p.event_id);
+var resp = req.post(p.url, JSON.stringify(p));
+if (req.getStatus() !== 200) {
+    throw 'bot do Discord respondeu HTTP ' + req.getStatus() + ': ' + resp;
+}
+return 'OK';
+"""
+DISCORD_PARAMS = {
+    "url": DISCORD_URL, "secret": "{$BOT_SECRET}",
+    "event_id": "{EVENT.ID}", "event_value": "{EVENT.VALUE}", "event_update": "{EVENT.UPDATE.STATUS}",
+    "name": "{EVENT.NAME}", "severity": "{EVENT.SEVERITY}", "nseverity": "{EVENT.NSEVERITY}",
+    "host": "{HOST.NAME}", "ip": "{HOST.IP}", "value": "{ITEM.LASTVALUE1}",
+    "date": "{EVENT.DATE}", "time": "{EVENT.TIME}",
+    "recovery_date": "{EVENT.RECOVERY.DATE}", "recovery_time": "{EVENT.RECOVERY.TIME}",
+    "duration": "{EVENT.DURATION}",
+}
+
+def configurar_discord(z):
+    """Idempotente: cria/atualiza o media type do Discord, a mídia do usuário noc e a operação na action.
+    Roda também quando o Zabbix já estava configurado, então quem já tinha o lab ganha o Discord sem apagar nada."""
+    segredo = os.environ.get("BOT_SECRET", "")
+    # Macro global com o segredo (o JS lê {$BOT_SECRET}); secreta = não aparece na interface
+    macro = z.call("usermacro.get", {"globalmacro": True, "filter": {"macro": "{$BOT_SECRET}"}, "output": ["globalmacroid"]})
+    if macro:
+        z.call("usermacro.updateglobal", {"globalmacroid": macro[0]["globalmacroid"], "value": segredo, "type": 1})
+    else:
+        z.call("usermacro.createglobal", {"macro": "{$BOT_SECRET}", "value": segredo, "type": 1})
+
+    dados = {
+        "type": 4, "name": DISCORD_NOME, "status": 0, "script": JS_DISCORD, "timeout": "30s",
+        "parameters": [{"name": k, "value": v} for k, v in DISCORD_PARAMS.items()],
+        "description": "Envia os alertas para o bot do Discord (container discord-bot). Token e canal: ./lab.sh discord",
+        # o webhook não usa o texto, mas o Zabbix exige template para cada tipo de operação usada
+        "message_templates": [
+            {"eventsource": 0, "recovery": 0, "subject": "[{EVENT.SEVERITY}] {EVENT.NAME}", "message": MSG_PROBLEMA},
+            {"eventsource": 0, "recovery": 1, "subject": "[RESOLVIDO] {EVENT.NAME}", "message": MSG_RECUPERACAO},
+            {"eventsource": 0, "recovery": 2, "subject": "[ATUALIZADO] {EVENT.NAME}", "message": "{EVENT.UPDATE.MESSAGE}"},
+        ],
+    }
+    mt = z.call("mediatype.get", {"filter": {"name": DISCORD_NOME}, "output": ["mediatypeid"]})
+    if mt:
+        discordid = mt[0]["mediatypeid"]
+        z.call("mediatype.update", {"mediatypeid": discordid, **dados})
+    else:
+        discordid = z.call("mediatype.create", dados)["mediatypeids"][0]
+
+    # Usuário noc: mantém as mídias que já tem (e-mail) e acrescenta o Discord
+    u = z.call("user.get", {"filter": {"username": "noc"}, "output": ["userid"], "selectMedias": "extend"})
+    if not u:
+        print("  (usuário noc não existe; pulei a mídia do Discord)")
+        return discordid
+    medias = [{k: m[k] for k in ("mediatypeid", "sendto", "active", "severity", "period")}
+              for m in u[0]["medias"] if m["mediatypeid"] != discordid]
+    medias.append({"mediatypeid": discordid, "sendto": "#noc", "active": 0,
+                   "severity": 63, "period": "1-7,00:00-24:00"})
+    z.call("user.update", {"userid": u[0]["userid"], "medias": medias})
+
+    # Action: e-mail + Discord para o grupo NOC
+    act = z.call("action.get", {"filter": {"name": ACTION_NOME}, "output": ["actionid"]})
+    gmail = z.call("mediatype.get", {"filter": {"name": "Gmail - NOC"}, "output": ["mediatypeid"]})
+    grp = z.call("usergroup.get", {"filter": {"name": "NOC - Operações"}, "output": ["usrgrpid"]})
+    if act and gmail and grp:
+        z.call("action.update", {"actionid": act[0]["actionid"],
+                                 "operations": operacoes_noc(gmail[0]["mediatypeid"], discordid, grp[0]["usrgrpid"])})
+    return discordid
+
+ACTION_NOME = "NOC - Alerta crítico roteador de borda"
+
+def operacoes_noc(gmailid, discordid, usrgrpid):
+    return [{"operationtype": 0, "esc_step_from": 1, "esc_step_to": 1,
+             "opmessage": {"default_msg": 1, "mediatypeid": mid},
+             "opmessage_grp": [{"usrgrpid": usrgrpid}]} for mid in (gmailid, discordid)]
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gmail", default=os.environ.get("GMAIL_REMETENTE") or "remetente@gmail.com",
@@ -119,6 +202,7 @@ def main():
         z.call("host.delete", [h["hostid"] for h in padrao])
     if a.se_nao_existir and z.call("host.get", {"filter": {"host": HOST}, "output": ["hostid"]}):
         print("Zabbix ja configurado (host Roteador-Borda existe) - mantendo como esta.")
+        print("Conferindo o bot do Discord (media type, usuario noc e action)"); configurar_discord(z)
         print("OK - Zabbix configurado.")
         return
 
@@ -252,7 +336,7 @@ def main():
 
     print("8) Action: Disaster no grupo 'Roteadores de Borda' -> e-mail para o NOC")
     z.call("action.create", {
-        "name": "NOC - Alerta crítico roteador de borda",
+        "name": ACTION_NOME,
         "eventsource": 0, "status": 0, "esc_period": "1h",
         "filter": {"evaltype": 1, "conditions": [
             {"conditiontype": 0, "operator": 0, "value": groupid},     # grupo de hosts = Roteadores de Borda
@@ -263,8 +347,12 @@ def main():
                         "opmessage_grp": [{"usrgrpid": usrgrpid}]}],
         "recovery_operations": [{"operationtype": 11, "opmessage": {"default_msg": 1}}],
     })
+
+    print("9) Bot do Discord: media type Webhook + midia do noc + operacao na action")
+    configurar_discord(z)
     print("\nOK - Zabbix configurado.")
     print("E-mail real (opcional): ./lab.sh email  ou  windows/6-EMAIL-OPCIONAL.bat")
+    print("Discord (opcional):     ./lab.sh discord  ou  windows/8-DISCORD.bat")
 
 if __name__ == "__main__":
     main()

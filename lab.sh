@@ -8,13 +8,15 @@ uso() {
 cat <<'TXT'
 Uso: ./lab.sh <comando>
 
-  iniciar      sobe os 6 containers e configura o Zabbix sozinho (1a vez: 3 a 6 min)
+  iniciar      sobe os 7 containers e configura o Zabbix sozinho (1a vez: 3 a 6 min)
   status       valores atuais, problemas ativos e e-mails enviados (via API do Zabbix)
   painel       status atualizado a cada 15 s (Ctrl+C sai)
   testes       sessao BGP + 4 testes de seguranca do SNMPv3
   demo [min]   ISP manda +10.000 rotas e a CPU do roteador vai a 100% (padrao 8 min)
   parar-demo   para o estresse e retira as rotas extras
   email        configura o envio REAL de e-mail (Gmail + senha de app) - opcional
+  discord      configura o bot do Discord (token + ID do canal do NOC) - opcional
+  discord-teste  manda um Disaster de teste + resolucao para o canal do Discord
   desligar     para os containers (configuracao e historico preservados)
   apagar       remove tudo, inclusive o banco do Zabbix (volta do zero)
 TXT
@@ -78,6 +80,24 @@ case "${1:-}" in
     echo "Senha de app do Gmail (16 letras, criada em https://myaccount.google.com/apppasswords):"
     compose run --rm --no-deps -it configurador python scripts/configurar_senha.py
     ;;
+  discord)
+    echo "Bot do Discord do NOC. Precisa de: token do bot e ID do canal (passo a passo no README)."
+    read -rsp "Token do bot (nao aparece na tela): " T; echo
+    read -rp "ID do canal do NOC: " C
+    read -rp "ID do cargo a marcar no Disaster (Enter = nenhum): " R
+    umask 077
+    printf 'DISCORD_TOKEN=%s\nDISCORD_CHANNEL_ID=%s\nDISCORD_ROLE_ID=%s\n' "$T" "$C" "$R" > discord.env
+    echo ">> discord.env gravado (fica so no seu PC, esta no .gitignore). Reiniciando o bot..."
+    compose up -d --build --force-recreate discord-bot
+    for i in $(seq 1 20); do
+      S=$(docker exec discord-bot python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8081/saude').read().decode())" 2>/dev/null || true)
+      echo "$S" | grep -q '"conectado": true' && break; sleep 2
+    done
+    echo "   $S"
+    echo "$S" | grep -q '"conectado": true' && echo ">> Bot online. Teste: ./lab.sh discord-teste" \
+      || echo "ERRO: o bot nao conectou. Veja: docker logs discord-bot"
+    ;;
+  discord-teste) docker exec discord-bot python teste.py "${2:-10}" ;;
   desligar) compose stop ;;
   apagar) compose down -v ;;
   *) uso ;;
